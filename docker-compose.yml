@@ -13,6 +13,6 @@ services:
       - REWARD_ID=${REWARD_ID}
       - SCREEN_SESSION=SF4
     volumes:
-      - ./users.json:/app/users.json
+      - ./data:/app/data
       - /run/screen:/run/screen
     restart: unless-stopped
