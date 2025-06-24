@@ -2,8 +2,9 @@ version: "3.8"
 
 services:
   whitelist-bot:
-    build: .
-    dockerfile: Dockerfile
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: twitch_mc_whitelist_bot
     environment:
       - TWITCH_TOKEN=${TWITCH_TOKEN}
