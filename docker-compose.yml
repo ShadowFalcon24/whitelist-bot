@@ -1,0 +1,16 @@
+version: "3.8"
+
+services:
+  whitelist-bot:
+    build: .
+    container_name: twitch_mc_whitelist_bot
+    environment:
+      - TWITCH_TOKEN=${TWITCH_TOKEN}
+      - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+      - TWITCH_CHANNEL_ID=${TWITCH_CHANNEL_ID}
+      - REWARD_ID=${REWARD_ID}
+      - SCREEN_SESSION=SF4
+    volumes:
+      - ./users.json:/app/users.json
+      - /run/screen:/run/screen
+    restart: unless-stopped
