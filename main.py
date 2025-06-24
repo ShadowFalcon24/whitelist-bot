@@ -11,10 +11,14 @@ from twitchio.ext import commands
 load_dotenv()
 TWITCH_TOKEN      = os.getenv("TWITCH_TOKEN")
 TWITCH_CLIENT_ID  = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CHANNEL_ID = os.getenv("TWITCH_CHANNEL_ID")
+TWITCH_CHANNEL_ID = os.getenv("TWITCH_CHANNEL_ID")  # numerische Kanal-ID
 SCREEN_SESSION    = os.getenv("SCREEN_SESSION", "mcserver")
 REWARD_ID         = os.getenv("REWARD_ID")
 USER_DB_FILE      = "users.json"
+
+if not TWITCH_CHANNEL_ID:
+    logging.error("TWITCH_CHANNEL_ID ist nicht gesetzt!")
+    exit(1)
 
 # ──────── 2. Logging ───────────────────────────────────────────────
 logging.basicConfig(
@@ -23,17 +27,15 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-# ──────── 3. Hilfsfunktionen ───────────────────────────────────────
+# ──────── 3. Helferfunktionen ─────────────────────────────────────
 
 def is_valid_mc_username(name: str) -> bool:
-    """Erlaubt nur A–Z, a–z, 0–9 und _; Länge 3–16."""
     valid = bool(re.fullmatch(r"[A-Za-z0-9_]{3,16}", name))
-    logging.info(f"Überprüfe Username '{name}': {'gültig' if valid else 'ungültig'}")
+    logging.info(f"Überprüfe Username '{name}' -> {'gültig' if valid else 'ungültig'}")
     return valid
 
 
 def refund_redemption(redemption_id: str):
-    """Setzt den Status der Redemption auf CANCELED zurück und erstattet die Punkte."""
     logging.info(f"Starte Rückerstattung für Redemption {redemption_id}")
     url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
     params = {
@@ -54,15 +56,13 @@ def refund_redemption(redemption_id: str):
 
 
 def run_screen_command(command: str) -> bool:
-    """Sende einen Befehl an die Screen-Session."""
     logging.info(f"Sende Screen-Befehl: {command}")
-    full_cmd = f"{command}\n"
     try:
         subprocess.run(
-            ["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", full_cmd],
+            ["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", command + "\n"],
             check=True
         )
-        logging.info("✔ Screen-Befehl erfolgreich ausgeführt")
+        logging.info("✔ Screen-Befehl ausgeführt")
         return True
     except subprocess.CalledProcessError as e:
         logging.error(f"Screen-Befehl fehlgeschlagen: {e}")
@@ -70,91 +70,79 @@ def run_screen_command(command: str) -> bool:
 
 
 def whitelist_add(username: str) -> bool:
-    """Player zur Whitelist hinzufügen."""
     logging.info(f"Whitelist hinzufügen: {username}")
     return run_screen_command(f"whitelist add {username}")
 
 
 def whitelist_remove(username: str) -> bool:
-    """Player von der Whitelist entfernen."""
     logging.info(f"Whitelist entfernen: {username}")
     return run_screen_command(f"whitelist remove {username}")
 
 
 def load_user_db() -> dict:
-    """Lade die Zuordnung Twitch-User -> Minecraft-Username aus JSON."""
     if not os.path.exists(USER_DB_FILE):
-        logging.info(f"Datenbankdatei '{USER_DB_FILE}' nicht gefunden. Erstelle neue.")
+        logging.info(f"DB-Datei '{USER_DB_FILE}' nicht gefunden. Neue wird angelegt.")
         return {}
-    logging.info(f"Lade Datenbank aus '{USER_DB_FILE}'")
+    logging.info(f"Lade DB aus '{USER_DB_FILE}'")
     with open(USER_DB_FILE, "r") as f:
         data = json.load(f)
-    logging.info(f"Datenbank geladen ({len(data)} Einträge)")
+    logging.info(f"DB geladen ({len(data)} Einträge)")
     return data
 
 
 def save_user_db(data: dict):
-    """Speichere die Zuordnung Twitch-User -> Minecraft-Username als JSON."""
-    logging.info(f"Speichere Datenbank mit {len(data)} Einträgen")
+    logging.info(f"Speichere DB mit {len(data)} Einträgen")
     with open(USER_DB_FILE, "w") as f:
         json.dump(data, f, indent=2)
-    logging.info("Datenbank gespeichert")
+    logging.info("DB gespeichert")
 
-# ──────── 4. Der Bot ───────────────────────────────────────────────
+# ──────── 4. Bot ─────────────────────────────────────────────────
 class Bot(commands.Bot):
     def __init__(self):
-        super().__init__(token=TWITCH_TOKEN, prefix="!", initial_channels=[])
+        super().__init__(
+            token=TWITCH_TOKEN,
+            prefix="!",
+            initial_channels=[TWITCH_CHANNEL_ID]  # channel ID statt Name
+        )
 
     async def event_ready(self):
-        logging.info(f"🤖 Bot verbunden als {self.nick}")
+        logging.info(f"🤖 Verbunden als {self.nick}, Channel-ID: {TWITCH_CHANNEL_ID}")
 
     async def event_raw_usernotice(self, channel, tags):
         logging.info("Empfange raw_usernotice Event")
-        # Nur User-Notices für Kanalpunkt-Redemptions
         if tags.get("msg-id") != "reward-redeemed":
-            logging.debug("Nicht relevant: kein reward-redeemed Event")
+            logging.debug("Kein reward-redeemed Event")
             return
 
-        reward_id = tags.get("custom-reward-id")
-        if reward_id != REWARD_ID:
-            logging.debug(f"Ignoriere Reward {reward_id}")
+        if tags.get("custom-reward-id") != REWARD_ID:
+            logging.debug(f"Ignoriere Reward {tags.get('custom-reward-id')}")
             return
 
-        twitch_user    = tags.get("login")
-        username       = tags.get("text", "").strip()
-        redemption_id  = tags.get("id")
+        twitch_user   = tags.get("login")
+        username      = tags.get("text", "").strip()
+        redemption_id = tags.get("id")
+        logging.info(f"🎁 {twitch_user} hat '{username}' eingelöst (ID: {redemption_id})")
 
-        logging.info(f"🎁 Redemption von {twitch_user}: '{username}' (ID: {redemption_id})")
-
-        # Validieren
         if not is_valid_mc_username(username):
-            logging.warning(f"Ungültiger Username: {username}")
             refund_redemption(redemption_id)
             return
 
-        # DB laden
         user_db = load_user_db()
+        if twitch_user in user_db and user_db[twitch_user] != username:
+            old = user_db[twitch_user]
+            whitelist_remove(old)
+            del user_db[twitch_user]
+            logging.info(f"Alte Zuordnung entfernt: {old}")
 
-        # Alten Account entfernen, falls vorhanden und unterschiedlich
-        if twitch_user in user_db:
-            old_mc = user_db[twitch_user]
-            if old_mc != username:
-                logging.info(f"🔁 Entferne alten Account {old_mc} für {twitch_user}")
-                whitelist_remove(old_mc)
-                del user_db[twitch_user]
-                logging.info(f"Alte Zuordnung entfernt")
-
-        # Neuen Account whitelisten
         if not whitelist_add(username):
-            logging.error(f"❌ Konnte {username} nicht whitelisten")
             refund_redemption(redemption_id)
             return
 
-        # DB aktualisieren
         user_db[twitch_user] = username
         save_user_db(user_db)
-        logging.info(f"📦 Gespeichert: {twitch_user} → {username}")
+        logging.info(f"Neuer Eintrag: {twitch_user} → {username}")
 
 # ──────── 5. Start ─────────────────────────────────────────────────
 if __name__ == "__main__":
+    logging.info("Starte Bot...")
     Bot().run()
