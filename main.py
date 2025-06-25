@@ -187,7 +187,12 @@ async def main():
     # Twitch-Objekt wie üblich initialisieren
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])  # App-Token holen (für API-Aufrufe)
-    twitch._user_auth_token = TWITCH_USER_TOKEN  # User-Token direkt setzen (Workaround für EventSub)
+    # Setze User-Token offiziell für alle User-API-Aufrufe und EventSub
+    twitch.set_user_authentication(
+        TWITCH_USER_TOKEN,
+        ["channel:read:redemptions", "channel:manage:redemptions"],
+        TWITCH_CLIENT_ID
+    )
 
     # Hole Broadcaster-Info (Twitch-User-ID)
     users = []
@@ -202,7 +207,6 @@ async def main():
     manager.broadcaster_id = broadcaster_id
     await manager.init_session()
 
-    # EventSubWebsocket benötigt KEINEN user_auth_token-Parameter im Konstruktor, nur das Twitch-Objekt
     eventsub = EventSubWebsocket(twitch)
 
     async def on_redemption(event):
