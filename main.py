@@ -187,8 +187,8 @@ async def main():
     # Twitch-Objekt wie üblich initialisieren
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])  # App-Token holen (für API-Aufrufe)
-    # Setze User-Token offiziell für alle User-API-Aufrufe und EventSub
-    twitch.set_user_authentication(
+    # Setze User-Token offiziell für alle User-API-Aufrufe und EventSub (async!)
+    await twitch.set_user_authentication(
         TWITCH_USER_TOKEN,
         ["channel:read:redemptions", "channel:manage:redemptions"],
         TWITCH_CLIENT_ID
@@ -229,6 +229,7 @@ async def main():
     finally:
         await eventsub.stop()  # Stoppe EventSub sauber
         await manager.close()  # Schliesse HTTP-Session
+        await twitch.close()  # Schliesse Twitch-Client-Session sauber
 
 
 if __name__ == "__main__":
