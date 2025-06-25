@@ -31,7 +31,6 @@ class WhitelistManager:
     def __init__(self):
         self.user_db = self.load_db()
         self.session = aiohttp.ClientSession()
-        self.broadcaster_id = ""
 
     def load_db(self):
         if os.path.isfile(USER_DB_FILE):
@@ -151,7 +150,6 @@ async def main():
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])
 
-    # ✅ Correct usage of async generator get_users
     user_info_data = []
     async for user in twitch.get_users(logins=[TWITCH_CHANNEL_NAME]):
         user_info_data.append(user)
@@ -160,7 +158,8 @@ async def main():
         logging.error(f"Channel {TWITCH_CHANNEL_NAME} nicht gefunden")
         return
 
-    broadcaster_id = user_info_data[0]["id"]
+    # Access TwitchUser object's id attribute, not as dict
+    broadcaster_id = user_info_data[0].id
 
     manager = WhitelistManager()
     manager.broadcaster_id = broadcaster_id
