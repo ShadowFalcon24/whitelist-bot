@@ -11,11 +11,15 @@ from twitchio.ext import commands
 load_dotenv()
 TWITCH_TOKEN      = os.getenv("TWITCH_TOKEN")
 TWITCH_CLIENT_ID  = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CHANNEL_ID = os.getenv("TWITCH_CHANNEL_ID")  # numerische Kanal-ID
+TWITCH_CHANNEL_NAME = os.getenv("TWITCH_CHANNEL_NAME")  # z.B. 'drmax03' (Kanalname)
+TWITCH_CHANNEL_ID = os.getenv("TWITCH_CHANNEL_ID")      # z.B. '506838882' (numerisch)
 SCREEN_SESSION    = os.getenv("SCREEN_SESSION", "mcserver")
 REWARD_ID         = os.getenv("REWARD_ID")
 USER_DB_FILE      = "users.json"
 
+if not TWITCH_CHANNEL_NAME:
+    logging.error("TWITCH_CHANNEL_NAME ist nicht gesetzt!")
+    exit(1)
 if not TWITCH_CHANNEL_ID:
     logging.error("TWITCH_CHANNEL_ID ist nicht gesetzt!")
     exit(1)
@@ -33,7 +37,6 @@ def is_valid_mc_username(name: str) -> bool:
     valid = bool(re.fullmatch(r"[A-Za-z0-9_]{3,16}", name))
     logging.info(f"Überprüfe Username '{name}' -> {'gültig' if valid else 'ungültig'}")
     return valid
-
 
 def refund_redemption(redemption_id: str):
     logging.info(f"Starte Rückerstattung für Redemption {redemption_id}")
@@ -54,7 +57,6 @@ def refund_redemption(redemption_id: str):
     else:
         logging.error(f"✖ Refund fehlgeschlagen: {r.status_code} – {r.text}")
 
-
 def run_screen_command(command: str) -> bool:
     logging.info(f"Sende Screen-Befehl: {command}")
     try:
@@ -68,16 +70,13 @@ def run_screen_command(command: str) -> bool:
         logging.error(f"Screen-Befehl fehlgeschlagen: {e}")
         return False
 
-
 def whitelist_add(username: str) -> bool:
     logging.info(f"Whitelist hinzufügen: {username}")
     return run_screen_command(f"whitelist add {username}")
 
-
 def whitelist_remove(username: str) -> bool:
     logging.info(f"Whitelist entfernen: {username}")
     return run_screen_command(f"whitelist remove {username}")
-
 
 def load_user_db() -> dict:
     if not os.path.exists(USER_DB_FILE):
@@ -88,7 +87,6 @@ def load_user_db() -> dict:
         data = json.load(f)
     logging.info(f"DB geladen ({len(data)} Einträge)")
     return data
-
 
 def save_user_db(data: dict):
     logging.info(f"Speichere DB mit {len(data)} Einträgen")
@@ -102,11 +100,11 @@ class Bot(commands.Bot):
         super().__init__(
             token=TWITCH_TOKEN,
             prefix="!",
-            initial_channels=[TWITCH_CHANNEL_ID]  # channel ID statt Name
+            initial_channels=[TWITCH_CHANNEL_NAME]
         )
 
     async def event_ready(self):
-        logging.info(f"🤖 Verbunden als {self.nick}, Channel-ID: {TWITCH_CHANNEL_ID}")
+        logging.info(f"🤖 Verbunden als {self.nick}, Channel: {TWITCH_CHANNEL_NAME}")
 
     async def event_raw_usernotice(self, channel, tags):
         logging.info("Empfange raw_usernotice Event")
