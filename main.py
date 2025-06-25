@@ -202,8 +202,8 @@ async def main():
     manager.broadcaster_id = broadcaster_id
     await manager.init_session()
 
-    # EventSubWebsocket benötigt explizit den User-Token
-    eventsub = EventSubWebsocket(twitch, user_auth_token=TWITCH_USER_TOKEN)
+    # EventSubWebsocket benötigt KEINEN user_auth_token-Parameter im Konstruktor, nur das Twitch-Objekt
+    eventsub = EventSubWebsocket(twitch)
 
     async def on_redemption(event):
         # Callback für neue Channel Points-Einlösungen
