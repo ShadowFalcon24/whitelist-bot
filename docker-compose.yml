@@ -7,8 +7,8 @@ services:
       dockerfile: Dockerfile
     container_name: twitch_mc_whitelist_bot
     environment:
-      - TWITCH_TOKEN=${TWITCH_TOKEN}
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+      - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
       - TWITCH_CHANNEL_NAME=${TWITCH_CHANNEL_NAME}
       - TWITCH_CHANNEL_ID=${TWITCH_CHANNEL_ID}
       - REWARD_ID=${REWARD_ID}
