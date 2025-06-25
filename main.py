@@ -20,6 +20,7 @@ TWITCH_CHANNEL_NAME  = os.getenv("TWITCH_CHANNEL_NAME")
 REWARD_ID            = os.getenv("REWARD_ID")
 SCREEN_SESSION       = os.getenv("SCREEN_SESSION", "mcserver")
 USER_DB_FILE         = "/app/data/users.json"  # Pfad zur User-Datenbank
+TWITCH_USER_TOKEN    = os.getenv("TWITCH_USER_TOKEN")  # User-OAuth-Token mit den nötigen Scopes
 
 # Verzögerungen für Retry-Mechanismen (z.B. bei API-Fehlern)
 RETRY_DELAYS = [1, 2, 5]
@@ -107,7 +108,7 @@ class WhitelistManager:
         }
         data = {"status": "CANCELED"}
         # Achtung: Du brauchst einen User-Token mit dem Scope 'channel:manage:redemptions'
-        token = await twitch.get_app_token()
+        token = TWITCH_USER_TOKEN  # User-Token verwenden
         headers = {
             "Authorization": f"Bearer {token}",
             "Client-Id": TWITCH_CLIENT_ID,
@@ -184,7 +185,11 @@ async def main():
     logging.info("Starte Twitch-Whitelist-Bot (EventSub WebSocket)")
 
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)  # Twitch-API-Objekt
-    await twitch.authenticate_app([])  # Authentifiziere App
+    # Authentifiziere mit User-Token (nicht nur App-Token!)
+    await twitch.authenticate_user(
+        scopes=['channel:read:redemptions', 'channel:manage:redemptions'],
+        user_token=TWITCH_USER_TOKEN
+    )
 
     # Hole Broadcaster-Info (Twitch-User-ID)
     users = []
