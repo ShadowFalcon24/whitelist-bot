@@ -31,6 +31,7 @@ class WhitelistManager:
     def __init__(self):
         self.user_db = self.load_db()
         self.session = aiohttp.ClientSession()
+        self.broadcaster_id = None
 
     def load_db(self):
         if os.path.isfile(USER_DB_FILE):
@@ -150,16 +151,14 @@ async def main():
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])
 
-    user_info_data = []
+    # Collect broadcaster info
+    users = []
     async for user in twitch.get_users(logins=[TWITCH_CHANNEL_NAME]):
-        user_info_data.append(user)
-
-    if not user_info_data:
+        users.append(user)
+    if not users:
         logging.error(f"Channel {TWITCH_CHANNEL_NAME} nicht gefunden")
         return
-
-    # Access TwitchUser object's id attribute, not as dict
-    broadcaster_id = user_info_data[0].id
+    broadcaster_id = users[0].id
 
     manager = WhitelistManager()
     manager.broadcaster_id = broadcaster_id
@@ -171,20 +170,23 @@ async def main():
             return
         await manager.handle_redemption(twitch, event)
 
+    # Start WS connection to get active_session
+    await eventsub.start()
+    # Subscribe to the channel points redemption event
     await eventsub.listen_channel_points_custom_reward_redemption_add(
         broadcaster_id, on_redemption
     )
+    logging.info("Subscriptions registered, waiting for events...")
 
+    # Keep bot running until interrupted
     try:
-        await eventsub.start()
+        await asyncio.Future()
     except KeyboardInterrupt:
         logging.info("Bot durch Benutzer gestoppt")
     finally:
+        await eventsub.stop()
         await manager.close()
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Bot durch Benutzer gestoppt")
+    asyncio.run(main())
