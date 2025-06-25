@@ -6,7 +6,6 @@ import asyncio
 import subprocess
 import aiohttp
 
-from time import sleep
 from dotenv import load_dotenv
 from twitchAPI.twitch import Twitch
 from twitchAPI.eventsub.websocket import EventSubWebsocket
@@ -16,7 +15,6 @@ load_dotenv()
 TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
 TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
 TWITCH_CHANNEL_NAME  = os.getenv("TWITCH_CHANNEL_NAME")
-TWITCH_CHANNEL_ID    = os.getenv("TWITCH_CHANNEL_ID")
 REWARD_ID            = os.getenv("REWARD_ID")
 SCREEN_SESSION       = os.getenv("SCREEN_SESSION", "mcserver")
 USER_DB_FILE         = "/app/data/users.json"
@@ -36,11 +34,16 @@ class WhitelistManager:
 
     def load_db(self):
         if os.path.isfile(USER_DB_FILE):
-            with open(USER_DB_FILE, "r") as f:
-                return json.load(f)
+            try:
+                with open(USER_DB_FILE, "r") as f:
+                    return json.load(f)
+            except Exception as e:
+                logging.error(f"Fehler beim Laden der User-DB: {e}")
+                return {}
         return {}
 
     def save_db(self):
+        os.makedirs(os.path.dirname(USER_DB_FILE), exist_ok=True)
         with open(USER_DB_FILE, "w") as f:
             json.dump(self.user_db, f, indent=2)
         logging.info("User DB saved")
@@ -59,12 +62,14 @@ class WhitelistManager:
         logging.warning("Mojang API nicht erreichbar")
         return False
 
-    async def close(self):
-        await self.session.close()
-
     def screen_cmd(self, cmd: str) -> bool:
         try:
-            subprocess.run(["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", cmd + "\n"], check=True)
+            subprocess.run(
+                ["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", cmd + "\n"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
             logging.info(f"Sent to MC console: {cmd}")
             return True
         except subprocess.CalledProcessError as e:
@@ -74,13 +79,14 @@ class WhitelistManager:
     async def refund_points(self, twitch: Twitch, redemption_id: str):
         url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
         params = {
-            "broadcaster_id": TWITCH_CHANNEL_ID,
+            "broadcaster_id": self.broadcaster_id,
             "reward_id": REWARD_ID,
             "id": redemption_id,
             "status": "CANCELED"
         }
+        token = await twitch.get_app_token()
         headers = {
-            "Authorization": f"Bearer {await twitch.get_app_token()}",  # ensure async call
+            "Authorization": f"Bearer {token}",
             "Client-Id": TWITCH_CLIENT_ID
         }
         for delay in RETRY_DELAYS:
@@ -89,7 +95,10 @@ class WhitelistManager:
                     if resp.status == 200:
                         logging.info(f"Refunded redemption {redemption_id}")
                         return True
-            except Exception:
+                    else:
+                        logging.warning(f"Refund failed with status {resp.status}")
+            except Exception as e:
+                logging.warning(f"Refund attempt error: {e}")
                 await asyncio.sleep(delay)
         logging.error(f"Failed to refund redemption {redemption_id}")
         return False
@@ -101,52 +110,61 @@ class WhitelistManager:
 
         logging.info(f"Redemption {redemption_id} by {twitch_user}: '{mc_name}'")
 
-        # Prüfe Format
         if not self.valid_format(mc_name):
             logging.warning("Ungültiges MC-Format")
             await self.refund_points(twitch, redemption_id)
             return
 
-        # Prüfe Mojang API
         if not await self.exists_mojang(mc_name):
             logging.warning("Ungültiger oder nicht existierender Mojang-Account")
             await self.refund_points(twitch, redemption_id)
             return
 
-        # Prüfe auf doppelte Zuordnung
         for user, stored_mc in self.user_db.items():
             if stored_mc == mc_name and user != twitch_user:
                 logging.warning(f"MC-Name {mc_name} ist bereits durch {user} registriert.")
                 await self.refund_points(twitch, redemption_id)
                 return
 
-        # Entferne alten Namen (erst jetzt!)
         old_name = self.user_db.get(twitch_user)
         if old_name and old_name != mc_name:
             if self.screen_cmd(f"whitelist remove {old_name}"):
                 logging.info(f"Ehemaliger Name {old_name} für {twitch_user} entfernt")
 
-        # Füge neuen Namen hinzu
         if not self.screen_cmd(f"whitelist add {mc_name}"):
             logging.error(f"Hinzufügen von {mc_name} zur Whitelist fehlgeschlagen")
             await self.refund_points(twitch, redemption_id)
             return
 
-        # Speichere neuen Namen
         self.user_db[twitch_user] = mc_name
         self.save_db()
         logging.info(f"{mc_name} erfolgreich für {twitch_user} whitelisted")
 
+    async def close(self):
+        await self.session.close()
+
+
 async def main():
     logging.info("Starte Twitch-Whitelist-Bot (EventSub WebSocket)")
 
-    twitch = await Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
+    # ✅ FIX: Do not await Twitch constructor
+    twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])
 
-    user_info = await twitch.get_users(logins=[TWITCH_CHANNEL_NAME])
-    broadcaster_id = user_info['data'][0]['id']
+    # ✅ FIX: get_users is an async generator, not a coroutine
+    user_info_data = []
+    async for user in twitch.get_users(logins=[TWITCH_CHANNEL_NAME]):
+        user_info_data.append(user)
+
+    if not user_info_data:
+        logging.error(f"Channel {TWITCH_CHANNEL_NAME} nicht gefunden")
+        return
+
+    broadcaster_id = user_info_data[0]["id"]
 
     manager = WhitelistManager()
+    manager.broadcaster_id = broadcaster_id
+
     eventsub = EventSubWebsocket(twitch)
 
     async def on_redemption(event: dict):
@@ -158,15 +176,13 @@ async def main():
         broadcaster_id, on_redemption
     )
 
-    await eventsub.start()
-
-    # Ensure proper shutdown
     try:
         await eventsub.start()
     except KeyboardInterrupt:
         logging.info("Bot durch Benutzer gestoppt")
     finally:
-        await manager.close()  # Close the session
+        await manager.close()
+
 
 if __name__ == "__main__":
     try:

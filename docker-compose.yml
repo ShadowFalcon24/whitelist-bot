@@ -1,19 +1,14 @@
 version: "3.8"
 
 services:
-  whitelist-bot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: twitch_mc_whitelist_bot
+  twitch-whitelist-bot:
+    build: .
     environment:
       - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
       - TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
       - TWITCH_CHANNEL_NAME=${TWITCH_CHANNEL_NAME}
-      - TWITCH_CHANNEL_ID=${TWITCH_CHANNEL_ID}
       - REWARD_ID=${REWARD_ID}
-      - SCREEN_SESSION=SF4
+      - SCREEN_SESSION=${SCREEN_SESSION:-mcserver}
     volumes:
       - ./data:/app/data
-      - /run/screen:/run/screen
     restart: unless-stopped
