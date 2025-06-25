@@ -31,6 +31,7 @@ class WhitelistManager:
     def __init__(self):
         self.user_db = self.load_db()
         self.session = aiohttp.ClientSession()
+        self.broadcaster_id = ""
 
     def load_db(self):
         if os.path.isfile(USER_DB_FILE):
@@ -147,11 +148,10 @@ class WhitelistManager:
 async def main():
     logging.info("Starte Twitch-Whitelist-Bot (EventSub WebSocket)")
 
-    # ✅ FIX: Do not await Twitch constructor
     twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
     await twitch.authenticate_app([])
 
-    # ✅ FIX: get_users is an async generator, not a coroutine
+    # ✅ Correct usage of async generator get_users
     user_info_data = []
     async for user in twitch.get_users(logins=[TWITCH_CHANNEL_NAME]):
         user_info_data.append(user)
