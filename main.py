@@ -202,7 +202,8 @@ async def main():
     manager.broadcaster_id = broadcaster_id
     await manager.init_session()
 
-    eventsub = EventSubWebsocket(twitch)  # EventSub Websocket für Twitch-Events
+    # EventSubWebsocket benötigt explizit den User-Token
+    eventsub = EventSubWebsocket(twitch, user_auth_token=TWITCH_USER_TOKEN)
 
     async def on_redemption(event):
         # Callback für neue Channel Points-Einlösungen
