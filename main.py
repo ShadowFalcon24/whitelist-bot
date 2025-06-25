@@ -2,25 +2,26 @@ import os
 import re
 import json
 import logging
-import subprocess
 import asyncio
+import subprocess
 import aiohttp
+
 from time import sleep
 from dotenv import load_dotenv
-from twitchio.ext import commands
+from twitchAPI.twitch import Twitch
+from twitchAPI.eventsub.websocket import EventSubWebsocket
 
 load_dotenv()
-TWITCH_TOKEN        = os.getenv("TWITCH_TOKEN")
-TWITCH_CLIENT_ID    = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CHANNEL_NAME = os.getenv("TWITCH_CHANNEL_NAME")
-TWITCH_CHANNEL_ID   = os.getenv("TWITCH_CHANNEL_ID")
-SCREEN_SESSION      = os.getenv("SCREEN_SESSION", "mcserver")
-REWARD_ID           = os.getenv("REWARD_ID")
-USER_DB_FILE        = "/app/data/users.json"
 
-if not all([TWITCH_TOKEN, TWITCH_CLIENT_ID, TWITCH_CHANNEL_NAME, TWITCH_CHANNEL_ID, REWARD_ID]):
-    logging.error("Missing environment variables")
-    exit(1)
+TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CLIENT_SECRET = os.getenv("TWITCH_CLIENT_SECRET")
+TWITCH_CHANNEL_NAME  = os.getenv("TWITCH_CHANNEL_NAME")
+TWITCH_CHANNEL_ID    = os.getenv("TWITCH_CHANNEL_ID")
+REWARD_ID            = os.getenv("REWARD_ID")
+SCREEN_SESSION       = os.getenv("SCREEN_SESSION", "mcserver")
+USER_DB_FILE         = "/app/data/users.json"
+
+RETRY_DELAYS = [1, 2, 5]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,26 +29,12 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 
-RETRY_DELAYS = [1, 2, 5]
-
-class TwitchWhitelistBot(commands.Bot):
+class WhitelistManager:
     def __init__(self):
-        self.session = None  # aiohttp Session erst später erzeugen
-        capabilities = [
-            "twitch.tv/commands",
-            "twitch.tv/tags",
-            "twitch.tv/membership",
-            "twitch.tv/channel_points"
-        ]
-        super().__init__(
-            token=TWITCH_TOKEN,
-            prefix="!",
-            initial_channels=[TWITCH_CHANNEL_NAME],
-            initial_capabilities=capabilities
-        )
         self.user_db = self.load_db()
+        self.session = aiohttp.ClientSession()
 
-    def load_db(self) -> dict:
+    def load_db(self):
         if os.path.isfile(USER_DB_FILE):
             with open(USER_DB_FILE, "r") as f:
                 return json.load(f)
@@ -58,40 +45,8 @@ class TwitchWhitelistBot(commands.Bot):
             json.dump(self.user_db, f, indent=2)
         logging.info("User DB saved")
 
-    def screen_cmd(self, cmd: str) -> bool:
-        try:
-            subprocess.run([
-                "screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", cmd + "\n"
-            ], check=True)
-            logging.info(f"Sent to MC console: {cmd}")
-            return True
-        except subprocess.CalledProcessError as e:
-            logging.error(f"Screen cmd error: {e}")
-            return False
-
-    async def refund(self, rid: str) -> bool:
-        url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
-        params = {
-            "broadcaster_id": TWITCH_CHANNEL_ID,
-            "reward_id": REWARD_ID,
-            "id": rid,
-            "status": "CANCELED"
-        }
-        headers = {
-            "Authorization": f"Bearer {TWITCH_TOKEN}",
-            "Client-Id": TWITCH_CLIENT_ID
-        }
-        for delay in RETRY_DELAYS:
-            try:
-                async with self.session.patch(url, params=params, headers=headers, timeout=5) as r:
-                    if r.status == 200:
-                        logging.info(f"Refunded redemption {rid}")
-                        return True
-            except Exception as e:
-                logging.warning(f"Refund attempt failed, retrying in {delay}s: {e}")
-                await asyncio.sleep(delay)
-        logging.error(f"Failed to refund redemption {rid}")
-        return False
+    def valid_format(self, name: str) -> bool:
+        return bool(re.fullmatch(r"[A-Za-z0-9_]{3,16}", name))
 
     async def exists_mojang(self, name: str) -> bool:
         url = f"https://api.mojang.com/users/profiles/minecraft/{name}"
@@ -99,68 +54,111 @@ class TwitchWhitelistBot(commands.Bot):
             try:
                 async with self.session.get(url, timeout=5) as r:
                     return r.status == 200
-            except Exception as e:
-                logging.warning(f"Mojang API check failed, retrying in {delay}s: {e}")
+            except aiohttp.ClientError:
                 await asyncio.sleep(delay)
+        logging.warning("Mojang API nicht erreichbar")
         return False
 
-    def valid_format(self, name: str) -> bool:
-        return bool(re.fullmatch(r"[A-Za-z0-9_]{3,16}", name))
+    def screen_cmd(self, cmd: str) -> bool:
+        try:
+            subprocess.run(["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", cmd + "\n"], check=True)
+            logging.info(f"Sent to MC console: {cmd}")
+            return True
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Screen cmd error: {e}")
+            return False
 
-    async def event_ready(self):
-        if self.session is None:
-            self.session = aiohttp.ClientSession()
-        logging.info(f"Connected as {self.nick} in {TWITCH_CHANNEL_NAME}")
+    async def refund_points(self, twitch: Twitch, redemption_id: str):
+        url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
+        params = {
+            "broadcaster_id": TWITCH_CHANNEL_ID,
+            "reward_id": REWARD_ID,
+            "id": redemption_id,
+            "status": "CANCELED"
+        }
+        headers = {
+            "Authorization": f"Bearer {twitch.get_app_token()}",
+            "Client-Id": TWITCH_CLIENT_ID
+        }
+        for delay in RETRY_DELAYS:
+            try:
+                async with twitch.session.patch(url, params=params, headers=headers) as resp:
+                    if resp.status == 200:
+                        logging.info(f"Refunded redemption {redemption_id}")
+                        return True
+            except Exception:
+                await asyncio.sleep(delay)
+        logging.error(f"Failed to refund redemption {redemption_id}")
+        return False
 
-    async def event_raw_usernotice(self, channel, tags):
-        logging.debug(f"raw_usernotice event tags: {dict(tags)}")
-        if tags.get("msg-id") != "reward-redeemed" or tags.get("custom-reward-id") != REWARD_ID:
-            logging.debug("Not a reward-redeemed or wrong reward-id")
+    async def handle_redemption(self, twitch: Twitch, event: dict):
+        twitch_user = event['user_login']
+        mc_name = event['user_input'].strip()
+        redemption_id = event['id']
+
+        logging.info(f"Redemption {redemption_id} by {twitch_user}: '{mc_name}'")
+
+        # Prüfe Format
+        if not self.valid_format(mc_name):
+            logging.warning("Ungültiges MC-Format")
+            await self.refund_points(twitch, redemption_id)
             return
 
-        twitch_user = tags.get("login")
-        mc = tags.get("text", "").strip()
-        rid = tags.get("id")
-        logging.info(f"Redemption {rid} by {twitch_user}: '{mc}'")
-
-        if not self.valid_format(mc):
-            logging.warning("Invalid MC username format")
-            await self.refund(rid)
+        # Prüfe Mojang API
+        if not await self.exists_mojang(mc_name):
+            logging.warning("Ungültiger oder nicht existierender Mojang-Account")
+            await self.refund_points(twitch, redemption_id)
             return
 
-        if not await self.exists_mojang(mc):
-            logging.warning("Mojang username does not exist or API unreachable")
-            await self.refund(rid)
-            return
-
-        if mc in self.user_db.values():
-            owner = next(u for u, m in self.user_db.items() if m == mc)
-            if owner != twitch_user:
-                logging.warning(f"MC name {mc} already assigned to {owner}")
-                await self.refund(rid)
+        # Prüfe auf doppelte Zuordnung
+        for user, stored_mc in self.user_db.items():
+            if stored_mc == mc_name and user != twitch_user:
+                logging.warning(f"MC-Name {mc_name} ist bereits durch {user} registriert.")
+                await self.refund_points(twitch, redemption_id)
                 return
 
-        if twitch_user in self.user_db and self.user_db[twitch_user] != mc:
-            old = self.user_db[twitch_user]
-            if self.screen_cmd(f"whitelist remove {old}"):
-                logging.info(f"Removed old {old} for {twitch_user}")
-            del self.user_db[twitch_user]
+        # Entferne alten Namen (erst jetzt!)
+        old_name = self.user_db.get(twitch_user)
+        if old_name and old_name != mc_name:
+            if self.screen_cmd(f"whitelist remove {old_name}"):
+                logging.info(f"Ehemaliger Name {old_name} für {twitch_user} entfernt")
 
-        if not self.screen_cmd(f"whitelist add {mc}"):
-            logging.error(f"Whitelist add failed for {mc}")
-            await self.refund(rid)
+        # Füge neuen Namen hinzu
+        if not self.screen_cmd(f"whitelist add {mc_name}"):
+            logging.error(f"Hinzufügen von {mc_name} zur Whitelist fehlgeschlagen")
+            await self.refund_points(twitch, redemption_id)
             return
 
-        self.user_db[twitch_user] = mc
+        # Speichere neuen Namen
+        self.user_db[twitch_user] = mc_name
         self.save_db()
-        logging.info(f"Whitelisted {mc} for {twitch_user}")
-        logging.info("Redemption handled successfully")
+        logging.info(f"{mc_name} erfolgreich für {twitch_user} whitelisted")
 
-    async def close(self):
-        if self.session:
-            await self.session.close()
-        await super().close()
+async def main():
+    logging.info("Starte Twitch-Whitelist-Bot (EventSub WebSocket)")
+
+    twitch = await Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
+    await twitch.authenticate_app([])
+
+    user_info = await twitch.get_users(logins=[TWITCH_CHANNEL_NAME])
+    broadcaster_id = user_info['data'][0]['id']
+
+    manager = WhitelistManager()
+    eventsub = EventSubWebsocket(twitch)
+
+    async def on_redemption(event: dict):
+        if event['reward']['id'] != REWARD_ID:
+            return
+        await manager.handle_redemption(twitch, event)
+
+    await eventsub.listen_channel_points_custom_reward_redemption_add(
+        broadcaster_id, on_redemption
+    )
+
+    await eventsub.start()
 
 if __name__ == "__main__":
-    logging.info("Starting Twitch whitelist bot")
-    TwitchWhitelistBot().run()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Bot durch Benutzer gestoppt")
