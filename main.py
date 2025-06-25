@@ -59,6 +59,9 @@ class WhitelistManager:
         logging.warning("Mojang API nicht erreichbar")
         return False
 
+    async def close(self):
+        await self.session.close()
+
     def screen_cmd(self, cmd: str) -> bool:
         try:
             subprocess.run(["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", cmd + "\n"], check=True)
@@ -77,7 +80,7 @@ class WhitelistManager:
             "status": "CANCELED"
         }
         headers = {
-            "Authorization": f"Bearer {twitch.get_app_token()}",
+            "Authorization": f"Bearer {await twitch.get_app_token()}",  # ensure async call
             "Client-Id": TWITCH_CLIENT_ID
         }
         for delay in RETRY_DELAYS:
@@ -156,6 +159,14 @@ async def main():
     )
 
     await eventsub.start()
+
+    # Ensure proper shutdown
+    try:
+        await eventsub.start()
+    except KeyboardInterrupt:
+        logging.info("Bot durch Benutzer gestoppt")
+    finally:
+        await manager.close()  # Close the session
 
 if __name__ == "__main__":
     try:
