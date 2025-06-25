@@ -3,8 +3,8 @@ import re
 import json
 import logging
 import subprocess
-import requests
-from time import sleep
+import asyncio
+import aiohttp
 from dotenv import load_dotenv
 from twitchio.ext import commands
 
@@ -31,7 +31,7 @@ RETRY_DELAYS = [1, 2, 5]
 
 class TwitchWhitelistBot(commands.Bot):
     def __init__(self):
-        self.session = requests.Session()
+        self.session = aiohttp.ClientSession()
         capabilities = [
             "twitch.tv/commands",
             "twitch.tv/tags",
@@ -68,37 +68,51 @@ class TwitchWhitelistBot(commands.Bot):
             logging.error(f"Screen cmd error: {e}")
             return False
 
-    def refund(self, rid: str) -> bool:
+    async def refund(self, rid: str) -> bool:
         url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
         params = {
             "broadcaster_id": TWITCH_CHANNEL_ID,
             "reward_id": REWARD_ID,
-            "id": rid,
+            "id": rid
+        }
+        json_data = {
             "status": "CANCELED"
         }
         headers = {
             "Authorization": f"Bearer {TWITCH_TOKEN}",
-            "Client-Id": TWITCH_CLIENT_ID
+            "Client-Id": TWITCH_CLIENT_ID,
+            "Content-Type": "application/json"
         }
         for delay in RETRY_DELAYS:
             try:
-                r = self.session.patch(url, params=params, headers=headers, timeout=5)
-                if r.status_code == 200:
-                    logging.info(f"Refunded redemption {rid}")
-                    return True
-            except requests.RequestException:
-                sleep(delay)
+                async with self.session.patch(url, params=params, json=json_data, headers=headers, timeout=5) as r:
+                    if r.status == 200:
+                        logging.info(f"Refunded redemption {rid}")
+                        return True
+                    else:
+                        text = await r.text()
+                        logging.warning(f"Refund failed status {r.status}: {text}")
+            except Exception as e:
+                logging.error(f"Exception refunding redemption {rid}: {e}")
+            await asyncio.sleep(delay)
         logging.error(f"Failed to refund redemption {rid}")
         return False
 
-    def exists_mojang(self, name: str) -> bool:
+    async def exists_mojang(self, name: str) -> bool:
         url = f"https://api.mojang.com/users/profiles/minecraft/{name}"
         for delay in RETRY_DELAYS:
             try:
-                r = self.session.get(url, timeout=5)
-                return r.status_code == 200
-            except requests.RequestException:
-                sleep(delay)
+                async with self.session.get(url, timeout=5) as r:
+                    if r.status == 200:
+                        return True
+                    elif r.status in (204, 404):
+                        return False
+                    else:
+                        logging.warning(f"Mojang API returned unexpected status {r.status} for {name}")
+            except Exception as e:
+                logging.error(f"Exception checking Mojang username {name}: {e}")
+            await asyncio.sleep(delay)
+        # Falls nach Retries keine Antwort, gilt als nicht erreichbar -> false -> refund
         return False
 
     def valid_format(self, name: str) -> bool:
@@ -118,16 +132,27 @@ class TwitchWhitelistBot(commands.Bot):
         rid = tags.get("id")
         logging.info(f"Redemption {rid} by {twitch_user}: '{mc}'")
 
-        if not self.valid_format(mc) or not self.exists_mojang(mc):
-            logging.warning("Invalid MC username format or not exists")
-            self.refund(rid)
+        if not self.valid_format(mc):
+            logging.warning(f"Invalid MC username format: {mc}")
+            await self.refund(rid)
+            return
+
+        try:
+            exists = await self.exists_mojang(mc)
+        except Exception as e:
+            logging.error(f"Exception while checking Mojang username: {e}")
+            exists = False
+
+        if not exists:
+            logging.warning(f"Minecraft username does not exist or API unreachable: {mc}")
+            await self.refund(rid)
             return
 
         if mc in self.user_db.values():
             owner = next(u for u, m in self.user_db.items() if m == mc)
             if owner != twitch_user:
                 logging.warning(f"MC name {mc} already assigned to {owner}")
-                self.refund(rid)
+                await self.refund(rid)
                 return
 
         if twitch_user in self.user_db and self.user_db[twitch_user] != mc:
@@ -138,13 +163,17 @@ class TwitchWhitelistBot(commands.Bot):
 
         if not self.screen_cmd(f"whitelist add {mc}"):
             logging.error(f"Whitelist add failed for {mc}")
-            self.refund(rid)
+            await self.refund(rid)
             return
 
         self.user_db[twitch_user] = mc
         self.save_db()
         logging.info(f"Whitelisted {mc} for {twitch_user}")
         logging.info("Redemption handled successfully")
+
+    async def close(self):
+        await super().close()
+        await self.session.close()
 
 if __name__ == "__main__":
     logging.info("Starting Twitch whitelist bot")
