@@ -184,8 +184,10 @@ async def main():
     # Hauptfunktion: Initialisiert Twitch, EventSub und startet den Bot
     logging.info("Starte Twitch-Whitelist-Bot (EventSub WebSocket)")
 
-    # Twitch-Objekt mit User-Token initialisieren (direkt über access_token)
-    twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET, authenticate_app=False, access_token=TWITCH_USER_TOKEN)
+    # Twitch-Objekt wie üblich initialisieren
+    twitch = Twitch(TWITCH_CLIENT_ID, TWITCH_CLIENT_SECRET)
+    await twitch.authenticate_app([])  # App-Token holen (für API-Aufrufe)
+    twitch._user_auth_token = TWITCH_USER_TOKEN  # User-Token direkt setzen (Workaround für EventSub)
 
     # Hole Broadcaster-Info (Twitch-User-ID)
     users = []
