@@ -9,14 +9,15 @@ from twitchio.ext import commands
 
 # ──────── 1. Konfiguration ─────────────────────────────────────────
 load_dotenv()
-TWITCH_TOKEN      = os.getenv("TWITCH_TOKEN")
-TWITCH_CLIENT_ID  = os.getenv("TWITCH_CLIENT_ID")
-TWITCH_CHANNEL_NAME = os.getenv("TWITCH_CHANNEL_NAME")  # z.B. 'drmax03' (Kanalname)
-TWITCH_CHANNEL_ID = os.getenv("TWITCH_CHANNEL_ID")      # z.B. '506838882' (numerisch)
-SCREEN_SESSION    = os.getenv("SCREEN_SESSION", "mcserver")
-REWARD_ID         = os.getenv("REWARD_ID")
-USER_DB_FILE      = "users.json"
+TWITCH_TOKEN         = os.getenv("TWITCH_TOKEN")
+TWITCH_CLIENT_ID     = os.getenv("TWITCH_CLIENT_ID")
+TWITCH_CHANNEL_NAME  = os.getenv("TWITCH_CHANNEL_NAME")  
+TWITCH_CHANNEL_ID    = os.getenv("TWITCH_CHANNEL_ID")    
+SCREEN_SESSION       = os.getenv("SCREEN_SESSION", "mcserver")
+REWARD_ID            = os.getenv("REWARD_ID")
+USER_DB_FILE         = "/app/data/users.json"
 
+# Validierung
 if not TWITCH_CHANNEL_NAME:
     logging.error("TWITCH_CHANNEL_NAME ist nicht gesetzt!")
     exit(1)
@@ -35,11 +36,11 @@ logging.basicConfig(
 
 def is_valid_mc_username(name: str) -> bool:
     valid = bool(re.fullmatch(r"[A-Za-z0-9_]{3,16}", name))
-    logging.info(f"Überprüfe Username '{name}' -> {'gültig' if valid else 'ungültig'}")
+    logging.info(f"Überprüfe MC-Username '{name}' -> {'gültig' if valid else 'ungültig'}")
     return valid
 
 def refund_redemption(redemption_id: str):
-    logging.info(f"Starte Rückerstattung für Redemption {redemption_id}")
+    logging.info(f"Starte Refund für Redemption {redemption_id}")
     url = "https://api.twitch.tv/helix/channel_points/custom_rewards/redemptions"
     params = {
         "broadcaster_id": TWITCH_CHANNEL_ID,
@@ -64,25 +65,25 @@ def run_screen_command(command: str) -> bool:
             ["screen", "-S", SCREEN_SESSION, "-p", "0", "-X", "stuff", command + "\n"],
             check=True
         )
-        logging.info("✔ Screen-Befehl ausgeführt")
+        logging.info("✔ Screen-Befehl erfolgreich")
         return True
     except subprocess.CalledProcessError as e:
         logging.error(f"Screen-Befehl fehlgeschlagen: {e}")
         return False
 
 def whitelist_add(username: str) -> bool:
-    logging.info(f"Whitelist hinzufügen: {username}")
+    logging.info(f"Whitelist add: {username}")
     return run_screen_command(f"whitelist add {username}")
 
 def whitelist_remove(username: str) -> bool:
-    logging.info(f"Whitelist entfernen: {username}")
+    logging.info(f"Whitelist remove: {username}")
     return run_screen_command(f"whitelist remove {username}")
 
 def load_user_db() -> dict:
     if not os.path.exists(USER_DB_FILE):
-        logging.info(f"DB-Datei '{USER_DB_FILE}' nicht gefunden. Neue wird angelegt.")
+        logging.info(f"DB not found at {USER_DB_FILE}, creating new")
         return {}
-    logging.info(f"Lade DB aus '{USER_DB_FILE}'")
+    logging.info(f"Lade DB aus {USER_DB_FILE}")
     with open(USER_DB_FILE, "r") as f:
         data = json.load(f)
     logging.info(f"DB geladen ({len(data)} Einträge)")
@@ -94,22 +95,22 @@ def save_user_db(data: dict):
         json.dump(data, f, indent=2)
     logging.info("DB gespeichert")
 
-# ──────── 4. Bot ─────────────────────────────────────────────────
+# ──────── 4. Der Bot ───────────────────────────────────────────────
 class Bot(commands.Bot):
     def __init__(self):
         super().__init__(
             token=TWITCH_TOKEN,
             prefix="!",
-            initial_channels=[TWITCH_CHANNEL_NAME]
+            initial_channels=[TWITCH_CHANNEL_NAME]  
         )
 
     async def event_ready(self):
-        logging.info(f"🤖 Verbunden als {self.nick}, Channel: {TWITCH_CHANNEL_NAME}")
+        logging.info(f"🤖 Verbunden als {self.nick} in {TWITCH_CHANNEL_NAME}")
 
     async def event_raw_usernotice(self, channel, tags):
-        logging.info("Empfange raw_usernotice Event")
+        logging.info("Empfange raw_usernotice")
         if tags.get("msg-id") != "reward-redeemed":
-            logging.debug("Kein reward-redeemed Event")
+            logging.debug("Nicht reward-redeemed")
             return
 
         if tags.get("custom-reward-id") != REWARD_ID:
@@ -119,18 +120,19 @@ class Bot(commands.Bot):
         twitch_user   = tags.get("login")
         username      = tags.get("text", "").strip()
         redemption_id = tags.get("id")
-        logging.info(f"🎁 {twitch_user} hat '{username}' eingelöst (ID: {redemption_id})")
+        logging.info(f"🎁 {twitch_user} eingelöst: '{username}' (ID {redemption_id})")
 
         if not is_valid_mc_username(username):
             refund_redemption(redemption_id)
             return
 
         user_db = load_user_db()
+        # alten Eintrag entfernen
         if twitch_user in user_db and user_db[twitch_user] != username:
             old = user_db[twitch_user]
             whitelist_remove(old)
             del user_db[twitch_user]
-            logging.info(f"Alte Zuordnung entfernt: {old}")
+            logging.info(f"Entfernte alte Zuordnung: {old}")
 
         if not whitelist_add(username):
             refund_redemption(redemption_id)
@@ -138,9 +140,9 @@ class Bot(commands.Bot):
 
         user_db[twitch_user] = username
         save_user_db(user_db)
-        logging.info(f"Neuer Eintrag: {twitch_user} → {username}")
+        logging.info(f"Neuer Eintrag gespeichert: {twitch_user} → {username}")
 
 # ──────── 5. Start ─────────────────────────────────────────────────
 if __name__ == "__main__":
-    logging.info("Starte Bot...")
+    logging.info("Starte Bot…")
     Bot().run()
